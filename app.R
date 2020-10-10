@@ -19,8 +19,8 @@ ui <- fluidPage(theme = "cerulean",
                                     fluidRow(
                                       column(3,
                                              wellPanel(id="well_input",
-                                                       h4("Upload files for computation"), 
-                                                       fluidRow(  fileInput("file1", "Upload text file",
+                                                       h4("Upload Freestyle Libre Pro Data"), 
+                                                       fluidRow(  fileInput("file1", "Input text file",
                                                                             multiple = FALSE,
                                                                             accept  = c(".txt"))
                                                        ),
@@ -85,14 +85,20 @@ server <- function(input, output, session) {
   })
 
     
+
 raw_data <- reactive({
   
   req(input$file1)
   
   tryCatch(
     {
+    input$file1$datapath %>%
+      readLines(n = 10) %>% 
+      str_detect("ID") %>% 
+      which() -> lines_to_skip
+       
     input$file1$datapath %>% 
-      read_tsv(skip = 2) %>% 
+      read_tsv(skip = lines_to_skip-1) %>% 
       select( "Time", "Historic Glucose (mg/dL)") %>% 
       mutate(Time = Time %>% parse_date_time(orders = "%Y-%m-%d %H:%M")) %>% 
       rename(Glucose = "Historic Glucose (mg/dL)") -> df
@@ -111,7 +117,14 @@ output$all_day_plot <- renderPlot({
     
         raw_data() %>% 
           mutate(Day = Time %>% day()) %>% 
-          mutate(Day = Day %>% as_factor %>% fct_inorder()) %>% 
+          mutate(Day = Day %>% as_factor %>% fct_inorder()) -> tidy_raw
+          
+          tidy_raw %>% 
+            pull(Day) %>% 
+            unique() %>% 
+            length() -> nrow_for_graph
+          
+          tidy_raw %>% 
           ggplot(aes(Time,Glucose)) +
           geom_line(aes(color = Glucose))+
           geom_hline(yintercept = 80, 
@@ -124,66 +137,91 @@ output$all_day_plot <- renderPlot({
                                high = '#ff0000') +
           theme_minimal()+
           # Add nrow = number of days 
-          facet_wrap(~Day, nrow = 14, scales = "free") -> my_plot
+          facet_wrap(~Day, nrow = nrow_for_graph, scales = "free") -> my_plot
         
         my_plot 
   
   })
 
+
 output$one_day_plot <- renderDygraph({
   
-  raw_data() -> raw_data1
-  
-  if(input$choose_day == "All"){
-    raw_data1 %>% 
-      mutate(Month = Time %>% month(label = TRUE),
-             Day = Time %>% day()) %>% 
-      mutate(date = paste0(Day," ",Month)) %>% 
-      mutate(ones = ifelse(Glucose > 140 | Glucose < 80, 1,0)) %>% 
-      mutate(number_of_rows = row_number()) %>% 
-      mutate(percentage = (sum(ones)/max(number_of_rows))*100) %>%
-      select(Time, Glucose,percentage) -> my_plot
+  tryCatch({
+    
+    raw_data() -> raw_data1
+    
+    if(input$choose_day == "All"){
+      raw_data1 %>% 
+        mutate(Month = Time %>% month(label = TRUE),
+               Day = Time %>% day()) %>% 
+        mutate(date = paste0(Day," ",Month)) %>% 
+        mutate(ones = ifelse(Glucose > 140 | Glucose < 80, 1,0)) %>% 
+        mutate(number_of_rows = row_number()) %>% 
+        mutate(percentage = (sum(ones)/max(number_of_rows))*100) %>%
+        select(Time, Glucose,percentage) -> my_plot
       
-    my_plot %>% pull(percentage) %>% unique() -> percentage_number
+      my_plot %>% pull(percentage) %>% unique() -> percentage_number
+      
+      my_plot %>% 
+        select(Time, Glucose) -> my_plot
+      
+    } else{
+      raw_data1 %>% 
+        mutate(Month = Time %>% month(label = TRUE),
+               Day = Time %>% day()) %>% 
+        mutate(date = paste0(Day," ",Month)) %>% 
+        filter(date == input$choose_day) %>% 
+        mutate(ones = ifelse(Glucose > 140 | Glucose < 80, 1,0)) %>% 
+        group_by(date) %>%
+        mutate(number_of_rows = row_number()) %>% 
+        mutate(percentage = (sum(ones)/max(number_of_rows))*100) %>%
+        select(Time, Glucose,percentage) -> my_plot 
+      
+      my_plot %>% pull(percentage) %>% unique() -> percentage_number
+      
+      my_plot %>% 
+        select(Time, Glucose) -> my_plot
+      
+    }
+    don = xts(my_plot,
+              order.by = my_plot$Time)
     
-    my_plot %>% 
-      select(Time, Glucose) -> my_plot
+    dygraph(don, main = paste0("Glucose Graph (mg/dL) ( <small>",percentage_number %>% round(1),"% not in specified range</small> )")) %>%
+      dyOptions(useDataTimezone = TRUE,
+                drawPoints = TRUE,
+                pointSize = 2) %>% 
+      dyRangeSelector() %>% 
+      dyLegend(show = "always",width = 400) %>% 
+      dyLimit(limit = 140, label = "140", labelLoc = c("left", "right"),
+              color = "red", strokePattern = "solid") %>% 
+      dyLimit(limit = 80, label = "80", labelLoc = c("left", "right"),
+              color = "red", strokePattern = "solid")  
     
-  } else{
-    raw_data1 %>% 
-      mutate(Month = Time %>% month(label = TRUE),
-             Day = Time %>% day()) %>% 
-      mutate(date = paste0(Day," ",Month)) %>% 
-      filter(date == input$choose_day) %>% 
-      mutate(ones = ifelse(Glucose > 140 | Glucose < 80, 1,0)) %>% 
-      group_by(date) %>%
-      mutate(number_of_rows = row_number()) %>% 
-      mutate(percentage = (sum(ones)/max(number_of_rows))*100) %>%
-      select(Time, Glucose,percentage) -> my_plot 
-    
-    my_plot %>% pull(percentage) %>% unique() -> percentage_number
-    
-    my_plot %>% 
-      select(Time, Glucose) -> my_plot
-    
-  }
+  },
   
-  don = xts(my_plot,
-          order.by = my_plot$Time)
-
-  dygraph(don, main = paste0("Glucose Graph ( <small>",percentage_number %>% round(1),"% not in specified range</small> )")) %>%
-  dyOptions(useDataTimezone = TRUE) %>% 
-  dyRangeSelector() %>% 
-  dyLegend(show = "follow") %>% 
-  dyLimit(limit = 140, label = "140", labelLoc = c("left", "right"),
-            color = "red", strokePattern = "solid") %>% 
-    dyLimit(limit = 80, label = "80", labelLoc = c("left", "right"),
-            color = "red", strokePattern = "solid") 
+  error = function(e) {
+    #error handling code
+    my_dummy_plot <- read_csv("dummy_data.csv")
+    
+    don = xts(my_dummy_plot,
+              order.by = my_dummy_plot$Time)
+    
+    dygraph(don, main = paste0("My Dummy Plot (mg/dL) ( <small> -- % not in specified range</small> )")) %>%
+      dyOptions(useDataTimezone = TRUE) %>% 
+      dyRangeSelector() %>% 
+      dyLegend(show = "always") %>% 
+      dyLimit(limit = 140, label = "140", labelLoc = c("left", "right"),
+              color = "red", strokePattern = "solid") %>% 
+      dyLimit(limit = 80, label = "80", labelLoc = c("left", "right"),
+              color = "red", strokePattern = "solid") 
+  })
+  
     
 
 })
 
 output$summary_table <- renderDataTable({
+  
   raw_data() %>% 
     mutate(Month = Time %>% month(label = TRUE),
            Day = Time %>% day()) %>% 
@@ -236,6 +274,9 @@ output$summary_plot <- renderPlotly({
     ggplot(aes(date, value))+
     geom_col(aes(fill = date)) +
     theme_minimal()+
+    theme(axis.text.x = element_text(angle = 90))+ 
+    guides(fill=guide_legend(title="Date")) +
+    labs(x = "")+
     facet_wrap(~Status) -> my_plot_summary
   
   my_plot_summary %>% ggplotly()
